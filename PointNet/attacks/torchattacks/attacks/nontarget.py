@@ -1,24 +1,32 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import numpy as np
 from torch.optim import lr_scheduler
 import os
 from ..attack import Attack
 
+from typing import Union
 
 
 class NB_attack(Attack):
-    def __init__(self, model, eps=0.3, alpha=2/255, iters=40):
+    def __init__(self, model, coord_range:Union[np.ndarray, torch.Tensor], eps=0.3, alpha=2/255, iters=40, use_coord:bool=False, use_color:bool=True):
         super(NB_attack, self).__init__("NB_attack", model)
         self.model = model
         self.eps=eps
         self.alpha=alpha
         self.iters=iters
+        self.use_coord = use_coord
+        self.use_color = use_color
+        assert use_coord or use_color, "a least one type of attack should be selected"
+        
+        self.coord_range = coord_range
+        if isinstance(self.coord_range, np.ndarray):
+            self.coord_range = torch.from_numpy(self.coord_range).to(self.device)
 
     def forward(self, images, labels):
-        # import pdb;pdb.set_trace()
+        coord = images[:, :3].clone().detach().to(self.device)
         color = images[:, 3:6].clone().detach().to(self.device)
-        ori_color = color.clone().detach().to(self.device)
         ori_image = images.clone().detach().to(self.device)
 
         adv_images = images.clone().detach().to(self.device)
@@ -26,19 +34,36 @@ class NB_attack(Attack):
         loss = nn.CrossEntropyLoss(reduction='sum')
 
         for i in range(self.iters):
-            color.requires_grad = True
-            adv_images[:, 3:6] = color
+            adv_images = adv_images.detach()
+            coord = adv_images[:, :3].detach().clone().requires_grad_(self.use_coord).to(self.device)
+            color = adv_images[:, 3:6].detach().clone().requires_grad_(self.use_color).to(self.device)
+
+            if self.use_color:
+                adv_images[:, 3:6] = color
+                
+            if self.use_coord:
+                adv_images[:, :3] = coord
             outputs,_ = self.model(adv_images)
 
             self.model.zero_grad()
             cost = (loss(outputs.reshape(-1, outputs.size(2)), labels.view(-1))/outputs.size(1)).to(self.device)
-            cost.backward(retain_graph=True)
+            cost.backward()
 
-            adv_images[:, 3:6] = adv_images[:, 3:6] + self.alpha*color.grad.sign()
-            eta = torch.clamp(adv_images[:, 3:6] - ori_color, min=-self.eps, max=self.eps)
-            color = torch.clamp(ori_color + eta, min=0, max=1).detach_()
+            if self.use_color:
+                adv_images[:, 3:6] = adv_images[:, 3:6] + self.alpha*color.grad.sign()
+                eta = torch.clamp(adv_images[:, 3:6] - ori_image[:, 3:6], min=-self.eps, max=self.eps)
+                color = torch.clamp(ori_image[:, 3:6] + eta, min=0, max=1).detach()
+                adv_images[:, 3:6] = color
 
-        dis = torch.dist(adv_images, ori_image, p=2) #/ batch_size
+                
+            if self.use_coord:
+                adv_images[:, :3] = adv_images[:, :3] + self.alpha*coord.grad.sign()
+                eta = torch.clamp(adv_images[:, :3] - ori_image[:, :3], min=-self.eps, max=self.eps)
+                coord = ori_image[:, :3] + eta
+                adv_images[:, :3] = coord
+                adv_images[:, 6:] = coord / self.coord_range[:, None]
+                
+        dis = torch.dist(adv_images[:, :6], ori_image[:, :6], p=2) #/ batch_size
         return adv_images
 
 class NU_attack(Attack):

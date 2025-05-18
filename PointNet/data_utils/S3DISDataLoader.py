@@ -172,7 +172,7 @@ class ScannetDatasetWholeScene():
         label_room = label_room.reshape((-1, self.block_points))
         sample_weight = sample_weight.reshape((-1, self.block_points))
         index_room = index_room.reshape((-1, self.block_points))
-        return data_room, label_room, sample_weight, index_room
+        return data_room, label_room, sample_weight, index_room, coord_max
 
     def __len__(self):
         return len(self.scene_points_list)

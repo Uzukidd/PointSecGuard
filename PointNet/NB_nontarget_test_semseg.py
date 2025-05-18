@@ -78,6 +78,18 @@ def parse_args():
         "--log_dir", type=str, default="nontar_pointnet2", help="Experiment root"
     )
     parser.add_argument(
+        "--use_coord",
+        action="store_true",
+        default=False,
+        help="Whether use coordination disturbation [default: False]",
+    )
+    parser.add_argument(
+        "--use_color",
+        action="store_true",
+        default=False,
+        help="Whether use color disturbation [default: False]",
+    )
+    parser.add_argument(
         "--visual",
         action="store_true",
         default=False,
@@ -159,7 +171,7 @@ def main(args):
     t = time.localtime()
     timestamp = time.strftime("%b-%d-%Y_%H%M", t)
     with open(os.path.join(experiment_dir, "log_" + timestamp + ".txt"), "w") as f:
-        f.write("index\tL2_dis\tadv_acc\tacc\tadv_miou\tmiou\n")
+        f.write("index\tL0_dis\tL2_dis\tadv_acc\tacc\tadv_miou\tmiou\n")
 
     if True:
         # import pdb;pdb.set_trace()
@@ -210,9 +222,8 @@ def main(args):
             adv_whole_scene = np.zeros(whole_scene_data.shape)
             print(whole_scene_data.shape)
 
-
             for _ in tqdm(range(args.num_votes), total=args.num_votes):
-                scene_data, scene_label, scene_smpw, scene_point_index = (
+                scene_data, scene_label, scene_smpw, scene_point_index, coord_max = (
                     TEST_DATASET_WHOLE_SCENE[batch_idx]
                 )
                 num_blocks = scene_data.shape[0]
@@ -248,7 +259,13 @@ def main(args):
                     seg_pred, _ = classifier(torch_data)
                     # print(batch_idx, sbatch)
                     attack = torchattacks.NB_attack(
-                        classifier, eps=0.1, alpha=0.05, iters=10
+                        classifier,
+                        eps=0.1,
+                        alpha=0.05,
+                        iters=10,
+                        use_coord=args.use_coord,
+                        use_color=args.use_color,
+                        coord_range=coord_max,
                     )
                     temp_datga = batch_label[0:real_batch_size, ...]
                     adv_images = attack(torch_data, batch_label[0:real_batch_size, ...])
@@ -262,7 +279,12 @@ def main(args):
                         adv_images.transpose(1, 2)[:, :, :6].detach().cpu().numpy(),
                         (-1, 6),
                     )
-                    dis = torch.dist(adv_images, torch_data)
+                    dis_l2 = torch.dist(
+                        adv_images[:, :6], torch_data[:, :6], p=2
+                    ) / adv_images.size(0)
+                    dis_l0 = torch.dist(
+                        adv_images[:, :6], torch_data[:, :6], p=0
+                    ) / adv_images.size(0)
                     batch_pred_label = (
                         seg_pred.contiguous().cpu().data.max(2)[1].numpy()
                     )
@@ -342,10 +364,11 @@ def main(args):
                     single_adv_tmp_iou = np.mean(single_adv_iou_map[single_arr != 0])
 
                     log_string(
-                        "%d\t%.3f\t%.5f\t%.5f\t%.5f\t\t%.5f\n"
+                        "%d\t%.3f\t%.3f\t%.5f\t%.5f\t%.5f\t\t%.5f\n"
                         % (
                             sbatch,
-                            dis,
+                            dis_l0,
+                            dis_l2,
                             adv_acc,
                             acc,
                             single_adv_tmp_iou,
@@ -356,10 +379,11 @@ def main(args):
                         os.path.join(experiment_dir, "log_" + timestamp + ".txt"), "a+"
                     ) as f:
                         f.write(
-                            "%d\t%.3f\t%.5f\t%.5f\t%.5f\t\t%.5f\n"
+                            "%d\t%.3f\t%.3f\t%.5f\t%.5f\t%.5f\t\t%.5f\n"
                             % (
                                 sbatch,
-                                dis,
+                                dis_l0,
+                                dis_l2,
                                 adv_acc,
                                 acc,
                                 single_adv_tmp_iou,
