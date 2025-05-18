@@ -91,9 +91,9 @@ class ScannetDatasetWholeScene():
         self.scene_points_num = []
         assert split in ['train', 'test']
         if self.split == 'train':
-            self.file_list = [d for d in os.listdir(root) if d.find('Area_%d' % test_area) is -1]
+            self.file_list = [d for d in os.listdir(root) if d.find('Area_%d' % test_area) == -1]
         else:
-            self.file_list = [d for d in os.listdir(root) if d.find('Area_%d' % test_area) is not - 1]
+            self.file_list = [d for d in os.listdir(root) if d.find('Area_%d' % test_area) != - 1]
         # self.file_list = [self.file_list[0]]
         # print(self.file_list)
 

@@ -23,7 +23,7 @@ class tar_NB_attack(Attack):
         ori_image = images.clone().detach().to(self.device)
 
         adv_images = images.clone().detach().to(self.device)
-        labels = torch.tensor(labels[0], dtype=torch.int64).to(self.device)
+        labels = torch.tensor(labels, dtype=torch.int64).to(self.device)
         loss = nn.CrossEntropyLoss()
 
         target_labels = torch.full(labels.shape, self.target).to(self.device)

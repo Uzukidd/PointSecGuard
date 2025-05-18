@@ -57,7 +57,7 @@ def train(model, train_loader, optimizer, scheduler, criterion, opt):
         gt = data.y.to(opt.device)
         # ------------------ zero, output, loss
         optimizer.zero_grad()
-        out = model(inputs)
+        out = model(inputs)     
         loss = criterion(out, gt)
 
         # ------------------ optimization
