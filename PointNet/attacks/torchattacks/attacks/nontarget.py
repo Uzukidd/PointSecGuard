@@ -66,6 +66,155 @@ class NB_attack(Attack):
         dis = torch.dist(adv_images[:, :6], ori_image[:, :6], p=2) #/ batch_size
         return adv_images
 
+from typing import Tuple
+from utils.loss_utils import *
+from utils.bp_utils import *
+
+class segeidos_attack(Attack):
+    def __init__(self, model, coord_range:Union[np.ndarray, torch.Tensor], eps=0.3, alpha=2/255, iters=40, use_coord:bool=False, use_color:bool=True):
+        super(segeidos_attack, self).__init__("segeidos_attack", model)
+        self.model = model
+        self.eps=eps
+        self.alpha=alpha
+        self.iters=iters
+        self.use_coord = use_coord
+        self.use_color = use_color
+        assert use_coord, "a least one type of attack should be selected"
+        
+        self.l2_weight = 1.0
+        self.hd_weight = 1.0
+        self.cd_weight = 1.0
+        self.curv_weight = 0.0
+        
+        self.coord_range = coord_range
+        if isinstance(self.coord_range, np.ndarray):
+            self.coord_range = torch.from_numpy(self.coord_range).to(self.device)
+            
+        self.prepare_optim_loss()
+            
+    def prepare_optim_loss(self):
+        self.optims = []
+        if self.l2_weight != 0.0:
+            self.optims.append(
+                loss_wrapper(norm_l2_loss, channel_first=True, keep_batch=True)
+            )
+
+        if self.hd_weight != 0.0:
+            self.optims.append(
+                loss_wrapper(hausdorff_loss, channel_first=True, keep_batch=True)
+            )
+
+        if self.curv_weight != 0.0:
+            self.optims.append(
+                loss_wrapper(
+                    local_curvature_loss,
+                    channel_first=True,
+                    keep_batch=True,
+                    need_normal=True,
+                )
+            )
+
+        if self.cd_weight != 0.0:
+            self.optims.append(
+                loss_wrapper(pseudo_chamfer_loss, channel_first=True, keep_batch=True)
+            )
+
+    def get_loss(
+        self, points: torch.Tensor, ori_points: torch.Tensor, normal_vec: torch.Tensor
+    ) -> list[torch.Tensor]:
+        loss = []
+        for optim in self.optims:
+            if optim.need_normal:
+                loss.append(optim(points, ori_points, normal_vec))
+            else:
+                loss.append(optim(points, ori_points))
+
+        return loss
+            
+    def get_delta(
+        self, points: torch.Tensor, ori_points: torch.Tensor, normal_vec: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        points = points.detach()
+        points.requires_grad = True
+
+        deltas = []
+
+        loss_list = self.get_loss(points, ori_points, normal_vec)
+
+        for loss_mask in range(loss_list.__len__()):
+            loss = loss_list[loss_mask].sum()
+
+            if points.grad is not None:
+                points.grad.zero_()
+
+            if loss_mask != loss_list.__len__() - 1:
+                loss.backward(retain_graph=True)
+            else:
+                loss.backward()
+            deltas.append(points.grad.detach().clone())
+            
+        return torch.stack(loss_list).transpose(0, 1), deltas
+
+
+    def forward(self, images, labels):
+        coord = images[:, :3].clone().detach().to(self.device)
+        # color = images[:, 3:6].clone().detach().to(self.device)
+        ori_image = images.clone().detach().to(self.device) # [B, C, N]
+        adv_images = images.clone().detach().to(self.device)
+        
+        labels = torch.tensor(labels, dtype=torch.int64).to(self.device)
+        loss = nn.CrossEntropyLoss(reduction='sum')
+
+        for i in range(self.iters):
+            adv_images = adv_images.detach()
+            coord = adv_images[:, :3].detach().clone().requires_grad_(self.use_coord).to(self.device)
+            # color = adv_images[:, 3:6].detach().clone().requires_grad_(self.use_color).to(self.device)
+
+            # if self.use_color:
+            #     adv_images[:, 3:6] = color
+                
+            if self.use_coord:
+                adv_images[:, :3] = coord
+            outputs,_ = self.model(adv_images)
+
+            self.model.zero_grad()
+            cost = (loss(outputs.reshape(-1, outputs.size(2)), labels.view(-1))/outputs.size(1)).to(self.device)
+            cost.backward()
+
+            # Boundary projection injected.
+            g = coord.grad.detach()
+
+            g_norm = (g**2).sum((1, 2)).sqrt()
+            g_norm.clamp_(min=1e-12)
+            g_hat = g / g_norm[:, None, None]
+            # import pdb;pdb.set_trace()
+            losses, deltas = self.get_delta(
+                adv_images[:, :3], ori_image[:, :3], None
+            )  # list[B, 3, n]
+
+            alpha = gram_schmidt(g_hat, deltas, need_gradient=True)  # list[B, n, 3]
+
+            alpha_hat = torch.stack(alpha).sum(0)  # [B, n, 3]
+
+
+            # if self.use_color:
+            #     adv_images[:, 3:6] = adv_images[:, 3:6] + self.alpha*color.grad.sign()
+            #     eta = torch.clamp(adv_images[:, 3:6] - ori_image[:, 3:6], min=-self.eps, max=self.eps)
+            #     color = torch.clamp(ori_image[:, 3:6] + eta, min=0, max=1).detach()
+            #     adv_images[:, 3:6] = color
+
+                
+            if self.use_coord:
+                assert not torch.isnan(alpha_hat).any()
+                adv_images[:, :3] = adv_images[:, :3] + alpha_hat * self.alpha
+                eta = torch.clamp(adv_images[:, :3] - ori_image[:, :3], min=-self.eps, max=self.eps)
+                coord = ori_image[:, :3] + eta
+                adv_images[:, :3] = coord
+                adv_images[:, 6:] = coord / self.coord_range[:, None]
+                
+        dis = torch.dist(adv_images[:, :6], ori_image[:, :6], p=2) #/ batch_size
+        return adv_images
+
 class NU_attack(Attack):
     def __init__(self, model, c=1e-4, kappa=0, steps=1000, lr=0.01):
         super(NU_attack, self).__init__("NU_attack", model)

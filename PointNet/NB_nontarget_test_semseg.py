@@ -22,6 +22,8 @@ sys.path.append(os.path.dirname(file_path))
 import time
 
 import torchattacks
+from utils.loss_utils import *
+from utils.metric_utils import *
 
 seed = 0
 np.random.seed(seed)
@@ -63,6 +65,13 @@ def parse_args():
     parser = argparse.ArgumentParser("Model")
     parser.add_argument(
         "--batch_size", type=int, default=32, help="batch size in testing [default: 32]"
+    )
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="nb-attack",
+        choices=["nb-attack", "seg-eidos"],
+        help="specify gpu device",
     )
     parser.add_argument("--gpu", type=str, default="1", help="specify gpu device")
     parser.add_argument(
@@ -120,6 +129,79 @@ def add_vote(vote_label_pool, point_idx, pred_label, weight):
     return vote_label_pool
 
 
+import open3d as o3d
+
+label_colors = np.array(
+    [
+        [0, 0, 0],  # 0:未定义
+        [1, 0, 0],  # 1:ceiling
+        [0, 1, 0],  # 2:floor
+        [0, 0, 1],  # 3:wall
+        [1, 1, 0],  # 4:beam
+        [1, 0, 1],  # 5:column
+        [0, 1, 1],  # 6:window
+        [0.5, 0.5, 0],  # 7:door
+        [0, 0.5, 0.5],  # 8:table
+        [0.5, 0, 0.5],  # 9:chair
+        [0.5, 0.5, 0.5],  # 10:sofa
+        [0.2, 0.8, 0.2],  # 11:bookcase
+        [0.8, 0.2, 0.2],  # 12:board
+        [0.2, 0.2, 0.8],  # 13:clutter
+    ]
+)
+
+
+def visualize_pcs(pts, colors=None, path:str=None):
+    """
+    pts: [N, 3]
+    colors: [N, 3]
+    """
+    if isinstance(pts, torch.Tensor):
+        pts = pts.detach().cpu().numpy()
+    
+    if isinstance(colors, torch.Tensor):
+        colors = colors.detach().cpu().numpy()
+    
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(pts)
+    if colors is not None:
+        pcd.colors = o3d.utility.Vector3dVector(colors)
+    
+    if path is None:
+        # Just visualize
+        o3d.visualization.draw_geometries([pcd], window_name="S3DIS Scene with Labels")
+    else:
+        # Save to image without showing window
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(visible=False)
+        vis.set_view_status("""
+        {
+            "class_name" : "ViewTrajectory",
+            "interval" : 29,
+            "is_loop" : false,
+            "trajectory" : 
+            [
+                {
+                    "boundingbox_max" : [ 5.7629999999999981, 3.3970000000000002, 3.2090000000000001 ],
+                    "boundingbox_min" : [ 0.018999999999998352, 0.0049999999999998934, 0.012 ],
+                    "field_of_view" : 60.0,
+                    "front" : [ -0.67157265755254236, -0.56464531189887446, 0.47975601859532591 ],
+                    "lookat" : [ 2.7294639871026201, 1.5188293017853196, 1.0024015781532183 ],
+                    "up" : [ 0.29022988995952953, 0.39528784601751343, 0.87150107846457314 ],
+                    "zoom" : 0.61999999999999988
+                }
+            ],
+            "version_major" : 1,
+            "version_minor" : 0
+        }
+                            """)
+        vis.add_geometry(pcd, False)
+        vis.poll_events()
+        vis.update_renderer()
+        vis.capture_screen_image(path, True)
+        vis.destroy_window()
+
+
 def main(args):
     def log_string(str):
         logger.info(str)
@@ -168,6 +250,17 @@ def main(args):
     )
     classifier.load_state_dict(checkpoint["model_state_dict"])
     classifier.eval()
+
+    collector = metric_collector()
+    # collector.register(ASR_metric(attack.classifier, attack.pre_head))
+    collector.register(L2_metric())
+    collector.register(HD_metric())
+    collector.register(DoubleHD_metric())
+    collector.register(CD_metric())
+    collector.register(PseudoCD_metric())
+    # collector.register(Curvature_metric(k=args.curv_loss_knn))
+    collector.register(Smooth_metric(k=16))
+
     t = time.localtime()
     timestamp = time.strftime("%b-%d-%Y_%H%M", t)
     with open(os.path.join(experiment_dir, "log_" + timestamp + ".txt"), "w") as f:
@@ -196,24 +289,24 @@ def main(args):
             total_iou_deno_class_tmp = [0 for _ in range(NUM_CLASSES)]
             adv_total_correct_class_tmp = [0 for _ in range(NUM_CLASSES)]
             adv_total_iou_deno_class_tmp = [0 for _ in range(NUM_CLASSES)]
-            if args.visual:
-                fout = open(
-                    os.path.join(visual_dir, scene_id[batch_idx] + "_pred.xyzrgb"), "w"
-                )
-                fout_gt = open(
-                    os.path.join(visual_dir, scene_id[batch_idx] + "_gt.xyzrgb"), "w"
-                )
-                fout_raw = open(
-                    os.path.join(visual_dir, scene_id[batch_idx] + "_raw.xyzrgb"), "w"
-                )
-                fout_adv_raw = open(
-                    os.path.join(visual_dir, scene_id[batch_idx] + "_adv_raw.xyzrgb"),
-                    "w",
-                )
-                fout_adv_pred = open(
-                    os.path.join(visual_dir, scene_id[batch_idx] + "_adv_pred.xyzrgb"),
-                    "w",
-                )
+            # if args.visual:
+            #     fout = open(
+            #         os.path.join(visual_dir, scene_id[batch_idx] + "_pred.xyzrgb"), "w"
+            #     )
+            #     fout_gt = open(
+            #         os.path.join(visual_dir, scene_id[batch_idx] + "_gt.xyzrgb"), "w"
+            #     )
+            #     fout_raw = open(
+            #         os.path.join(visual_dir, scene_id[batch_idx] + "_raw.xyzrgb"), "w"
+            #     )
+            #     fout_adv_raw = open(
+            #         os.path.join(visual_dir, scene_id[batch_idx] + "_adv_raw.xyzrgb"),
+            #         "w",
+            #     )
+            #     fout_adv_pred = open(
+            #         os.path.join(visual_dir, scene_id[batch_idx] + "_adv_pred.xyzrgb"),
+            #         "w",
+            #     )
 
             whole_scene_data = TEST_DATASET_WHOLE_SCENE.scene_points_list[batch_idx]
             whole_scene_label = TEST_DATASET_WHOLE_SCENE.semantic_labels_list[batch_idx]
@@ -221,9 +314,20 @@ def main(args):
             adv_vote_label_pool = np.zeros((whole_scene_label.shape[0], NUM_CLASSES))
             adv_whole_scene = np.zeros(whole_scene_data.shape)
             print(whole_scene_data.shape)
-
+            # visualize_pcs(
+            #     whole_scene_data[::100, :3],
+            #     label_colors[whole_scene_label[::100].astype(int)],
+            # )
+            if args.visual:
+                visualize_pcs(
+                    whole_scene_data[::100, :3],
+                    label_colors[whole_scene_label[::100].astype(int)],
+                    os.path.join(visual_dir, scene_id[batch_idx] + "_gt.png"),
+                )
+            whole_adv_data = None
+            whole_adv_label = None
             for _ in tqdm(range(args.num_votes), total=args.num_votes):
-                scene_data, scene_label, scene_smpw, scene_point_index, coord_max = (
+                scene_data, scene_label, scene_smpw, scene_point_index, coord_max, xy_offset = (
                     TEST_DATASET_WHOLE_SCENE[batch_idx]
                 )
                 num_blocks = scene_data.shape[0]
@@ -233,7 +337,12 @@ def main(args):
                 batch_label = np.zeros((BATCH_SIZE, NUM_POINT))
                 batch_point_index = np.zeros((BATCH_SIZE, NUM_POINT))
                 batch_smpw = np.zeros((BATCH_SIZE, NUM_POINT))
+
+                whole_adv_data = np.zeros((num_blocks, NUM_POINT, 3))
+                whole_adv_label = np.zeros((num_blocks, NUM_POINT))
+                print(whole_adv_data.shape)
                 print(f"s_batch_num:{s_batch_num}")
+
                 for sbatch in range(s_batch_num):
                     start_idx = sbatch * BATCH_SIZE
                     end_idx = min((sbatch + 1) * BATCH_SIZE, num_blocks)
@@ -258,15 +367,26 @@ def main(args):
 
                     seg_pred, _ = classifier(torch_data)
                     # print(batch_idx, sbatch)
-                    attack = torchattacks.NB_attack(
-                        classifier,
-                        eps=0.1,
-                        alpha=0.05,
-                        iters=10,
-                        use_coord=args.use_coord,
-                        use_color=args.use_color,
-                        coord_range=coord_max,
-                    )
+                    if args.method == "nb-attack":
+                        attack = torchattacks.NB_attack(
+                            classifier,
+                            eps=0.1,
+                            alpha=0.05,
+                            iters=10,
+                            use_coord=args.use_coord,
+                            use_color=args.use_color,
+                            coord_range=coord_max,
+                        )
+                    elif args.method == "seg-eidos":
+                        attack = torchattacks.segeidos_attack(
+                            classifier,
+                            eps=0.1,
+                            alpha=0.7,
+                            iters=10,
+                            use_coord=args.use_coord,
+                            use_color=args.use_color,
+                            coord_range=coord_max,
+                        )
                     temp_datga = batch_label[0:real_batch_size, ...]
                     adv_images = attack(torch_data, batch_label[0:real_batch_size, ...])
 
@@ -279,12 +399,21 @@ def main(args):
                         adv_images.transpose(1, 2)[:, :, :6].detach().cpu().numpy(),
                         (-1, 6),
                     )
-                    dis_l2 = torch.dist(
-                        adv_images[:, :6], torch_data[:, :6], p=2
-                    ) / adv_images.size(0)
+                    dis_l2 = norm_l2_loss(
+                        adv_images.permute(0, 2, 1)[:, :, :6],
+                        torch_data.permute(0, 2, 1)[:, :, :6],
+                    ).mean()
                     dis_l0 = torch.dist(
                         adv_images[:, :6], torch_data[:, :6], p=0
                     ) / adv_images.size(0)
+
+                    collector.update(
+                        adv_images.permute(0, 2, 1)[:, :, :3],
+                        torch_data.permute(0, 2, 1)[:, :, :3],
+                        None,
+                        None,
+                    )
+
                     batch_pred_label = (
                         seg_pred.contiguous().cpu().data.max(2)[1].numpy()
                     )
@@ -303,6 +432,11 @@ def main(args):
                         adv_batch_pred_label[0:real_batch_size, ...],
                         batch_smpw[0:real_batch_size, ...],
                     )
+                    
+                    whole_adv_data[start_idx:end_idx, ...] = batch_data[0:real_batch_size, :, :3]
+                    whole_adv_data[start_idx:end_idx, :, :2] += xy_offset[start_idx:end_idx, :]
+                    
+                    whole_adv_label[start_idx:end_idx, ...] = adv_batch_pred_label[0:real_batch_size]
 
                     gt = torch.tensor(
                         batch_label[0:real_batch_size, ...], dtype=torch.int
@@ -324,6 +458,8 @@ def main(args):
                     single_adv_total_iou_deno_class_tmp = [
                         0 for _ in range(NUM_CLASSES)
                     ]
+                    # if args.visual:
+                    #     visualize_pcs(adv_images.permute(0, 2, 1)[0, :, :3].view(-1, 3))
                     for l in range(NUM_CLASSES):
                         single_total_seen_class_tmp[l] += np.sum(
                             (single_whole_scene_label == l)
@@ -427,81 +563,100 @@ def main(args):
 
             log_string("Mean IoU of %s: %.4f" % (scene_id[batch_idx], tmp_iou))
             log_string("Mean IoU of %s: %.4f" % (scene_id[batch_idx], adv_tmp_iou))
-
+            print(collector.output_str())
             print("----------------------------")
+            if args.visual:
+                visualize_pcs(
+                    whole_adv_data.reshape(-1, 3)[::500, :3],
+                    None,
+                    os.path.join(visual_dir, scene_id[batch_idx] + "_adv_pts.png"),
+                )
+
+                visualize_pcs(
+                    whole_scene_data[::100, :3],
+                    label_colors[pred_label[::100].astype(int)],
+                    os.path.join(visual_dir, scene_id[batch_idx] + "_pred.png"),
+                )
+                
+                visualize_pcs(
+                    whole_scene_data[::100, :3],
+                    label_colors[adv_pred_label[::100].astype(int)],
+                    os.path.join(visual_dir, scene_id[batch_idx] + "_adv_pred.png"),
+                )
+
 
             filename = os.path.join(visual_dir, scene_id[batch_idx] + ".txt")
             with open(filename, "w") as pl_save:
                 for i in pred_label:
                     pl_save.write(str(int(i)) + "\n")
                 pl_save.close()
-            for i in range(whole_scene_label.shape[0]):
-                color = g_label2color[pred_label[i]]
-                color_gt = g_label2color[whole_scene_label[i]]
-                color_adv = g_label2color[adv_pred_label[i]]
-                if args.visual:
-                    fout.write(
-                        "%f %f %f %f %f %f\n"
-                        % (
-                            whole_scene_data[i, 0],
-                            whole_scene_data[i, 1],
-                            whole_scene_data[i, 2],
-                            color[0],
-                            color[1],
-                            color[2],
-                        )
-                    )
-                    fout_gt.write(
-                        "%f %f %f %f %f %f\n"
-                        % (
-                            whole_scene_data[i, 0],
-                            whole_scene_data[i, 1],
-                            whole_scene_data[i, 2],
-                            color_gt[0],
-                            color_gt[1],
-                            color_gt[2],
-                        )
-                    )
-                    fout_raw.write(
-                        "%f %f %f %f %f %f\n"
-                        % (
-                            whole_scene_data[i, 0],
-                            whole_scene_data[i, 1],
-                            whole_scene_data[i, 2],
-                            whole_scene_data[i, 3] / 255.0,
-                            whole_scene_data[i, 4] / 255.0,
-                            whole_scene_data[i, 5] / 255.0,
-                        )
-                    )
-                    fout_adv_raw.write(
-                        "%f %f %f %f %f %f\n"
-                        % (
-                            whole_scene_data[i, 0],
-                            whole_scene_data[i, 1],
-                            whole_scene_data[i, 2],
-                            adv_whole_scene[i, 3],
-                            adv_whole_scene[i, 4],
-                            adv_whole_scene[i, 5],
-                        )
-                    )
-                    fout_adv_pred.write(
-                        "%f %f %f %f %f %f\n"
-                        % (
-                            whole_scene_data[i, 0],
-                            whole_scene_data[i, 1],
-                            whole_scene_data[i, 2],
-                            color_adv[0],
-                            color_adv[1],
-                            color_adv[2],
-                        )
-                    )
+            # for i in range(whole_scene_label.shape[0]):
+            #     color = g_label2color[pred_label[i]]
+            #     color_gt = g_label2color[whole_scene_label[i]]
+            #     color_adv = g_label2color[adv_pred_label[i]]
+            #     if args.visual:
+            #         fout.write(
+            #             "%f %f %f %f %f %f\n"
+            #             % (
+            #                 whole_scene_data[i, 0],
+            #                 whole_scene_data[i, 1],
+            #                 whole_scene_data[i, 2],
+            #                 color[0],
+            #                 color[1],
+            #                 color[2],
+            #             )
+            #         )
+            #         fout_gt.write(
+            #             "%f %f %f %f %f %f\n"
+            #             % (
+            #                 whole_scene_data[i, 0],
+            #                 whole_scene_data[i, 1],
+            #                 whole_scene_data[i, 2],
+            #                 color_gt[0],
+            #                 color_gt[1],
+            #                 color_gt[2],
+            #             )
+            #         )
+            #         fout_raw.write(
+            #             "%f %f %f %f %f %f\n"
+            #             % (
+            #                 whole_scene_data[i, 0],
+            #                 whole_scene_data[i, 1],
+            #                 whole_scene_data[i, 2],
+            #                 whole_scene_data[i, 3] / 255.0,
+            #                 whole_scene_data[i, 4] / 255.0,
+            #                 whole_scene_data[i, 5] / 255.0,
+            #             )
+            #         )
+            #         fout_adv_raw.write(
+            #             "%f %f %f %f %f %f\n"
+            #             % (
+            #                 whole_scene_data[i, 0],
+            #                 whole_scene_data[i, 1],
+            #                 whole_scene_data[i, 2],
+            #                 adv_whole_scene[i, 3],
+            #                 adv_whole_scene[i, 4],
+            #                 adv_whole_scene[i, 5],
+            #             )
+            #         )
+            #         fout_adv_pred.write(
+            #             "%f %f %f %f %f %f\n"
+            #             % (
+            #                 whole_scene_data[i, 0],
+            #                 whole_scene_data[i, 1],
+            #                 whole_scene_data[i, 2],
+            #                 color_adv[0],
+            #                 color_adv[1],
+            #                 color_adv[2],
+            #             )
+            #         )
 
-            if args.visual:
-                fout.close()
-                fout_gt.close()
-                fout_raw.close()
-                fout_adv_raw.close()
-                fout_adv_pred.close()
+            # if args.visual:
+            #     fout.close()
+            #     fout_gt.close()
+            #     fout_raw.close()
+            #     fout_adv_raw.close()
+            #     fout_adv_pred.close()
 
         IoU = np.array(total_correct_class) / (
             np.array(total_iou_deno_class, dtype=float) + 1e-6

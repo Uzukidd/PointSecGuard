@@ -131,8 +131,8 @@ class ScannetDatasetWholeScene():
         # print(coord_min, coord_max)
         grid_x = int(np.ceil(float(coord_max[0] - coord_min[0] - self.block_size) / self.stride) + 1)
         grid_y = int(np.ceil(float(coord_max[1] - coord_min[1] - self.block_size) / self.stride) + 1)
-        # print(grid_x, grid_y)
-        data_room, label_room, sample_weight, index_room = np.array([]), np.array([]), np.array([]),  np.array([])
+        print(f"{grid_x}, {grid_y}")
+        data_room, label_room, sample_weight, index_room, xy_offset = np.array([]), np.array([]), np.array([]),  np.array([]),  np.array([])
         for index_y in range(0, grid_y):
             for index_x in range(0, grid_x):
                 s_x = coord_min[0] + index_x * self.stride
@@ -163,16 +163,20 @@ class ScannetDatasetWholeScene():
                 data_batch = np.concatenate((data_batch, normlized_xyz), axis=1)
                 label_batch = labels[point_idxs].astype(int)
                 batch_weight = self.labelweights[label_batch]
+                data_xy_offset = np.tile(np.array([(s_x + self.block_size / 2.0), (s_y + self.block_size / 2.0)]), (data_batch.shape[0], 1))
 
+                xy_offset = np.vstack([xy_offset, data_xy_offset]) if xy_offset.size else data_xy_offset
                 data_room = np.vstack([data_room, data_batch]) if data_room.size else data_batch
                 label_room = np.hstack([label_room, label_batch]) if label_room.size else label_batch
                 sample_weight = np.hstack([sample_weight, batch_weight]) if label_room.size else batch_weight
                 index_room = np.hstack([index_room, point_idxs]) if index_room.size else point_idxs
+                
+        xy_offset = xy_offset.reshape((-1, self.block_points, xy_offset.shape[1]))
         data_room = data_room.reshape((-1, self.block_points, data_room.shape[1]))
         label_room = label_room.reshape((-1, self.block_points))
         sample_weight = sample_weight.reshape((-1, self.block_points))
         index_room = index_room.reshape((-1, self.block_points))
-        return data_room, label_room, sample_weight, index_room, coord_max
+        return data_room, label_room, sample_weight, index_room, coord_max, xy_offset
 
     def __len__(self):
         return len(self.scene_points_list)

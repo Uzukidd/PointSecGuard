@@ -55,7 +55,7 @@ def parse_args():
         "--visual",
         action="store_true",
         default=False,
-        help="Whether visualize result [default: False]",
+    help="Whether visualize result [default: False]",
     )
     parser.add_argument(
         "--test_area",
@@ -161,7 +161,7 @@ def main(args):
             whole_scene_label = TEST_DATASET_WHOLE_SCENE.semantic_labels_list[batch_idx]
             vote_label_pool = np.zeros((whole_scene_label.shape[0], NUM_CLASSES))
             for _ in tqdm(range(args.num_votes), total=args.num_votes):
-                scene_data, scene_label, scene_smpw, scene_point_index = (
+                scene_data, scene_label, scene_smpw, scene_point_index, coord_max = (
                     TEST_DATASET_WHOLE_SCENE[batch_idx]
                 )
                 num_blocks = scene_data.shape[0]

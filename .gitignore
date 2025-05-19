@@ -6,7 +6,7 @@ PointNet/data/*
 *.pth
 # C extensions
 *.so
-
+.vscode
 # Distribution / packaging
 .Python
 build/
