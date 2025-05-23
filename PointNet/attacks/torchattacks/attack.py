@@ -11,9 +11,9 @@ class Attack(object):
         self.device = next(model.parameters()).device
 
         self._targeted = 1
-        self._attack_mode = 'default'
-        self._return_type = 'float'
-        self._target_map_function = lambda images, labels:labels
+        self._attack_mode = "default"
+        self._return_type = "float"
+        self._target_map_function = lambda images, labels: labels
 
     def forward(self, *input):
         r"""
@@ -21,6 +21,21 @@ class Attack(object):
         Should be overridden by all subclasses.
         """
         raise NotImplementedError
+
+    @staticmethod
+    def normalize_pts(
+        pts: torch.Tensor, xy_offset: torch.Tensor, coord_range: torch.Tensor
+    ):
+        """
+        Args:
+            pts:[B, N, 3]
+            xy_offset: [B, N, 2]
+            coord_range: [3]
+        """
+        pts = pts.clone()
+        pts[:, :, :2] = pts[:, :, :2] + xy_offset
+        pts = pts / coord_range
+        return pts
 
     def set_attack_mode(self, mode, target_map_function=None):
         r"""
@@ -34,27 +49,34 @@ class Attack(object):
             target_map_function (function) :
 
         """
-        if self._attack_mode is 'only_default':
-            raise ValueError("Changing attack mode is not supported in this attack method.")
+        if self._attack_mode is "only_default":
+            raise ValueError(
+                "Changing attack mode is not supported in this attack method."
+            )
 
-        if (mode is 'targeted') and (target_map_function is None):
-            raise ValueError("Please give a target_map_function, e.g., lambda images, labels:(labels+1)%10.")
+        if (mode is "targeted") and (target_map_function is None):
+            raise ValueError(
+                "Please give a target_map_function, e.g., lambda images, labels:(labels+1)%10."
+            )
 
-        if mode=="default":
+        if mode == "default":
             self._attack_mode = "default"
             self._targeted = 1
             self._transform_label = self._get_label
-        elif mode=="targeted":
+        elif mode == "targeted":
             self._attack_mode = "targeted"
             self._targeted = -1
             self._target_map_function = target_map_function
             self._transform_label = self._get_target_label
-        elif mode=="least_likely":
+        elif mode == "least_likely":
             self._attack_mode = "least_likely"
             self._targeted = -1
             self._transform_label = self._get_least_likely_label
         else:
-            raise ValueError(mode + " is not a valid mode. [Options : default, targeted, least_likely]")
+            raise ValueError(
+                mode
+                + " is not a valid mode. [Options : default, targeted, least_likely]"
+            )
 
     def set_return_type(self, type):
         r"""
@@ -64,10 +86,10 @@ class Attack(object):
             type (str) : 'float' or 'int'. (DEFAULT : 'float')
 
         """
-        if type == 'float':
-            self._return_type = 'float'
-        elif type == 'int':
-            self._return_type = 'int'
+        if type == "float":
+            self._return_type = "float"
+        elif type == "int":
+            self._return_type = "int"
         else:
             raise ValueError(type + " is not a valid type. [Options : float, int]")
 
@@ -97,8 +119,8 @@ class Attack(object):
             image_list.append(adv_images.cpu())
             label_list.append(labels.cpu())
 
-            if self._return_type == 'int':
-                adv_images = adv_images.float()/255
+            if self._return_type == "int":
+                adv_images = adv_images.float() / 255
 
             if verbose:
                 outputs = self.model(adv_images)
@@ -107,14 +129,18 @@ class Attack(object):
                 correct += (predicted == labels.to(self.device)).sum()
 
                 acc = 100 * float(correct) / total
-                print('- Save Progress : %2.2f %% / Accuracy : %2.2f %%' % ((step+1)/total_batch*100, acc), end='\r')
+                print(
+                    "- Save Progress : %2.2f %% / Accuracy : %2.2f %%"
+                    % ((step + 1) / total_batch * 100, acc),
+                    end="\r",
+                )
 
         x = torch.cat(image_list, 0)
         y = torch.cat(label_list, 0)
 
         if save_path is not None:
             torch.save((x, y), save_path)
-            print('\n- Save Complete!')
+            print("\n- Save Complete!")
 
         self._switch_model()
 
@@ -153,7 +179,7 @@ class Attack(object):
         Function for changing the return type.
         Return images as int.
         """
-        return (images*255).type(torch.uint8)
+        return (images * 255).type(torch.uint8)
 
     def _switch_model(self):
         r"""
@@ -167,29 +193,34 @@ class Attack(object):
     def __str__(self):
         info = self.__dict__.copy()
 
-        del_keys = ['model', 'attack']
+        del_keys = ["model", "attack"]
 
         for key in info.keys():
-            if key[0] == "_" :
+            if key[0] == "_":
                 del_keys.append(key)
 
         for key in del_keys:
             del info[key]
 
-        info['attack_mode'] = self._attack_mode
-        if info['attack_mode'] == 'only_default' :
-            info['attack_mode'] = 'default'
+        info["attack_mode"] = self._attack_mode
+        if info["attack_mode"] == "only_default":
+            info["attack_mode"] = "default"
 
-        info['return_type'] = self._return_type
+        info["return_type"] = self._return_type
 
-        return self.attack + "(" + ', '.join('{}={}'.format(key, val) for key, val in info.items()) + ")"
+        return (
+            self.attack
+            + "("
+            + ", ".join("{}={}".format(key, val) for key, val in info.items())
+            + ")"
+        )
 
     def __call__(self, *input, **kwargs):
         self.model.eval()
         images = self.forward(*input, **kwargs)
         self._switch_model()
 
-        if self._return_type == 'int':
+        if self._return_type == "int":
             images = self._to_uint(images)
 
         return images

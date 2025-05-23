@@ -170,3 +170,11 @@ class metric_collector:
                 mean, std = result
                 log += f"{m.name}: {mean:.6f} ± {std:.6f}\n"
         return log
+
+    def output_dict(self):
+        res_dict = dict()
+        for m in self.metrics:
+            result = m.compute()
+            mean, std = result
+            res_dict[m.name] = mean.item()
+        return res_dict

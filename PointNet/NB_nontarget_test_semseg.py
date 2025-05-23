@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import time
+import json
 from pathlib import Path
 
 import numpy as np
@@ -70,7 +71,7 @@ def parse_args():
         "--method",
         type=str,
         default="nb-attack",
-        choices=["nb-attack", "seg-eidos"],
+        choices=["nb-attack", "nu-attack", "seg-eidos"],
         help="specify gpu device",
     )
     parser.add_argument("--gpu", type=str, default="1", help="specify gpu device")
@@ -151,22 +152,22 @@ label_colors = np.array(
 )
 
 
-def visualize_pcs(pts, colors=None, path:str=None):
+def visualize_pcs(pts, colors=None, path: str = None):
     """
     pts: [N, 3]
     colors: [N, 3]
     """
     if isinstance(pts, torch.Tensor):
         pts = pts.detach().cpu().numpy()
-    
+
     if isinstance(colors, torch.Tensor):
         colors = colors.detach().cpu().numpy()
-    
+
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(pts)
     if colors is not None:
         pcd.colors = o3d.utility.Vector3dVector(colors)
-    
+
     if path is None:
         # Just visualize
         o3d.visualization.draw_geometries([pcd], window_name="S3DIS Scene with Labels")
@@ -174,7 +175,8 @@ def visualize_pcs(pts, colors=None, path:str=None):
         # Save to image without showing window
         vis = o3d.visualization.Visualizer()
         vis.create_window(visible=False)
-        vis.set_view_status("""
+        vis.set_view_status(
+            """
         {
             "class_name" : "ViewTrajectory",
             "interval" : 29,
@@ -194,7 +196,8 @@ def visualize_pcs(pts, colors=None, path:str=None):
             "version_major" : 1,
             "version_minor" : 0
         }
-                            """)
+                            """
+        )
         vis.add_geometry(pcd, False)
         vis.poll_events()
         vis.update_renderer()
@@ -327,9 +330,14 @@ def main(args):
             whole_adv_data = None
             whole_adv_label = None
             for _ in tqdm(range(args.num_votes), total=args.num_votes):
-                scene_data, scene_label, scene_smpw, scene_point_index, coord_max, xy_offset = (
-                    TEST_DATASET_WHOLE_SCENE[batch_idx]
-                )
+                (
+                    scene_data,
+                    scene_label,
+                    scene_smpw,
+                    scene_point_index,
+                    coord_max,
+                    xy_offset,
+                ) = TEST_DATASET_WHOLE_SCENE[batch_idx]
                 num_blocks = scene_data.shape[0]
                 s_batch_num = (num_blocks + BATCH_SIZE - 1) // BATCH_SIZE
                 batch_data = np.zeros((BATCH_SIZE, NUM_POINT, 9))
@@ -376,16 +384,30 @@ def main(args):
                             use_coord=args.use_coord,
                             use_color=args.use_color,
                             coord_range=coord_max,
+                            data_xy_offset=xy_offset[start_idx:end_idx, :],
+                        )
+                    elif args.method == "nu-attack":
+                        attack = torchattacks.NU_attack(
+                            classifier,
+                            c=0.1,
+                            kappa=0,
+                            steps=1000,
+                            lr=0.01,
+                            use_coord=args.use_coord,
+                            use_color=args.use_color,
+                            coord_range=coord_max,
+                            data_xy_offset=xy_offset[start_idx:end_idx, :],
                         )
                     elif args.method == "seg-eidos":
                         attack = torchattacks.segeidos_attack(
                             classifier,
                             eps=0.1,
-                            alpha=0.7,
+                            alpha=0.5,
                             iters=10,
                             use_coord=args.use_coord,
                             use_color=args.use_color,
                             coord_range=coord_max,
+                            data_xy_offset=xy_offset[start_idx:end_idx, :],
                         )
                     temp_datga = batch_label[0:real_batch_size, ...]
                     adv_images = attack(torch_data, batch_label[0:real_batch_size, ...])
@@ -432,11 +454,20 @@ def main(args):
                         adv_batch_pred_label[0:real_batch_size, ...],
                         batch_smpw[0:real_batch_size, ...],
                     )
-                    
-                    whole_adv_data[start_idx:end_idx, ...] = batch_data[0:real_batch_size, :, :3]
-                    whole_adv_data[start_idx:end_idx, :, :2] += xy_offset[start_idx:end_idx, :]
-                    
-                    whole_adv_label[start_idx:end_idx, ...] = adv_batch_pred_label[0:real_batch_size]
+
+                    whole_adv_data[start_idx:end_idx, ...] = (
+                        adv_images.permute(0, 2, 1)[0:real_batch_size, :, :3]
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    )
+                    whole_adv_data[start_idx:end_idx, :, :2] += xy_offset[
+                        start_idx:end_idx, :
+                    ]
+
+                    whole_adv_label[start_idx:end_idx, ...] = adv_batch_pred_label[
+                        0:real_batch_size
+                    ]
 
                     gt = torch.tensor(
                         batch_label[0:real_batch_size, ...], dtype=torch.int
@@ -564,11 +595,18 @@ def main(args):
             log_string("Mean IoU of %s: %.4f" % (scene_id[batch_idx], tmp_iou))
             log_string("Mean IoU of %s: %.4f" % (scene_id[batch_idx], adv_tmp_iou))
             print(collector.output_str())
+            with open(
+                os.path.join(visual_dir, scene_id[batch_idx] + ".json"), "w"
+            ) as f:
+                res_dict = collector.output_dict()
+                res_dict["ori_iou"] = tmp_iou
+                res_dict["adv_iou"] = adv_tmp_iou
+                json.dump(res_dict, f, indent=4)
             print("----------------------------")
             if args.visual:
                 visualize_pcs(
                     whole_adv_data.reshape(-1, 3)[::500, :3],
-                    None,
+                    label_colors[whole_adv_label.reshape(-1)[::500].astype(int)],
                     os.path.join(visual_dir, scene_id[batch_idx] + "_adv_pts.png"),
                 )
 
@@ -577,13 +615,12 @@ def main(args):
                     label_colors[pred_label[::100].astype(int)],
                     os.path.join(visual_dir, scene_id[batch_idx] + "_pred.png"),
                 )
-                
+
                 visualize_pcs(
                     whole_scene_data[::100, :3],
                     label_colors[adv_pred_label[::100].astype(int)],
                     os.path.join(visual_dir, scene_id[batch_idx] + "_adv_pred.png"),
                 )
-
 
             filename = os.path.join(visual_dir, scene_id[batch_idx] + ".txt")
             with open(filename, "w") as pl_save:
