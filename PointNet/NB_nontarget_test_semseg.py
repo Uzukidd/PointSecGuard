@@ -708,25 +708,27 @@ def main(args):
                 seg_label_to_cat[l] + " " * (14 - len(seg_label_to_cat[l])),
                 total_correct_class[l] / float(total_iou_deno_class[l]),
             )
+        
+        output_summary = ""
+
         log_string(iou_per_class_str)
-        log_string("eval point avg class IoU: %f" % np.mean(IoU))
-        log_string(
-            "eval whole scene point avg class acc: %f"
-            % (
+        
+        output_summary += "eval point avg class IoU: %f\n" % np.mean(IoU)
+        output_summary += "eval whole scene point avg class acc: %f\n" % (
                 np.mean(
                     np.array(total_correct_class)
                     / (np.array(total_seen_class, dtype=float) + 1e-6)
                 )
             )
-        )
-        log_string(
-            "eval whole scene point accuracy: %f"
+        
+        output_summary += (
+            "eval whole scene point accuracy: %f\n"
             % (np.sum(total_correct_class) / float(np.sum(total_seen_class) + 1e-6))
         )
-        log_string("-------attack--------")
-        log_string("eval point avg class IoU: %f" % np.mean(adv_IoU))
-        log_string(
-            "eval whole scene point avg class acc: %f"
+        output_summary += ("-------attack--------\n")
+        output_summary += ("eval point avg class IoU: %f\n" % np.mean(adv_IoU))
+        output_summary += (
+            "eval whole scene point avg class acc: %f\n"
             % (
                 np.mean(
                     np.array(adv_total_correct_class)
@@ -734,10 +736,13 @@ def main(args):
                 )
             )
         )
-        log_string(
-            "eval whole scene point accuracy: %f"
+        output_summary += (
+            "eval whole scene point accuracy: %f\n"
             % (np.sum(adv_total_correct_class) / float(np.sum(total_seen_class) + 1e-6))
         )
+        with open(os.path.join(visual_dir, "summary.txt"), "w", encoding="utf-8") as f:
+            f.write(output_summary)
+        log_string(output_summary)
 
         print("Done!")
 

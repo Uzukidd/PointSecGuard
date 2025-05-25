@@ -60,7 +60,7 @@ def random_noise(model, loader, opt):
     t = time.localtime()
     timestamp = time.strftime('%b-%d-%Y_%H%M', t)
     with open(osp.join(save_path, 'log_'+timestamp+'.txt'), 'a+') as f:
-        f.write("index\tl2dis\tadv_acc\tacc\tadv_miou\miou\n")
+        f.write("index\tl2dis\tadv_acc\tacc\tadv_miou\\miou\n")
     model.eval()
     with torch.no_grad():
         for i, data in enumerate(tqdm(loader)):
